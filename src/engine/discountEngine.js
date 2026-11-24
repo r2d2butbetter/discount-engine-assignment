@@ -8,11 +8,12 @@
  *
  * DiscountRule {
  *   ruleId:    string       — e.g. "RULE-01"
- *   scope:     "brand" | "platform"
- *   appliesTo: string       — e.g. "Natura Casa", "Amazon India"
+ *   scope:     "brand" | "platform" | "cart"
+ *   appliesTo: string       — e.g. "Natura Casa", "Amazon India"; empty for cart scope
  *   type:      "percentage" | "flat"
  *   value:     number       — percentage as integer (15 = 15%), flat in rupees
  *   stackable: boolean
+ *   minCartValue: number | null  — minimum cart total to trigger the rule (cart scope only)
  * }
  *
  * CartItem {
@@ -42,6 +43,8 @@
  */
 export function ruleMatchesItem(item, rule) {
   const normalise = (s) => s.trim().toLowerCase()
+  // Cart-scope rules are never matched against individual items
+  if (rule.scope === 'cart') return false
   if (rule.scope === 'brand') {
     return normalise(item.brand) === normalise(rule.appliesTo)
   }
@@ -171,4 +174,60 @@ export function processCart(cartItems, rules) {
  */
 export function cartTotal(results) {
   return results.reduce((sum, r) => sum + r.finalPrice, 0)
+}
+
+/**
+ * Filters the full rules list down to cart-scoped rules only.
+ * @param {DiscountRule[]} rules
+ * @returns {DiscountRule[]}
+ */
+export function getCartRules(rules) {
+  return rules.filter((r) => r.scope === 'cart')
+}
+
+/**
+ * Given item-level DiscountResult[] and cart rules, finds the best applicable
+ * cart discount and returns a CartDiscountResult, or null if none trigger.
+ *
+ * CartDiscountResult {
+ *   ruleId:          string
+ *   saving:          number   — rupees saved by this cart rule
+ *   discountedTotal: number   — final cart total after the cart discount
+ *   originalTotal:   number   — sum of item finalPrices before cart discount
+ *   reasoning:       string
+ * }
+ *
+ * Logic:
+ *   1. Sum finalPrice across all itemResults.
+ *   2. For each eligible cart rule (minCartValue met), compute saving.
+ *   3. Pick the rule with the highest saving.
+ *   4. Return the CartDiscountResult, or null if none qualify.
+ */
+export function applyCartDiscount(itemResults, cartRules) {
+  const originalTotal = itemResults.reduce((sum, r) => sum + r.finalPrice, 0)
+
+  // Find all rules whose minCartValue threshold is met
+  const eligible = cartRules.filter(
+    (r) => r.minCartValue === null || originalTotal >= r.minCartValue
+  )
+
+  if (eligible.length === 0) return null
+
+  // Pick the rule that gives the highest saving
+  const best = eligible.reduce((prev, curr) => {
+    const prevSaving = Math.round(originalTotal * prev.value / 100)
+    const currSaving = Math.round(originalTotal * curr.value / 100)
+    return currSaving > prevSaving ? curr : prev
+  })
+
+  const saving = Math.round(originalTotal * best.value / 100)
+  const discountedTotal = originalTotal - saving
+
+  return {
+    ruleId: best.ruleId,
+    saving,
+    discountedTotal,
+    originalTotal,
+    reasoning: `Cart offer: ${best.value}% off — Rs.${saving} saved`,
+  }
 }

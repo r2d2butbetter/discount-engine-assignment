@@ -2,29 +2,37 @@
  * App.jsx
  *
  * Top-level component. Manages state for rules, cart items, and results.
- * Wires together CSV upload → parse → engine → display.
+ * Wires together all three input modes → engine → display:
+ *   1. CSV upload (rules + cart)
+ *   2. Natural-language rule input (NLP → ChatGPT / OpenAI → DiscountRule)
+ *   3. PDF cart upload (PDF → CartItem[])
  */
 
 import { useState } from 'react'
 import CsvUploader from './components/CsvUploader.jsx'
+import PdfUploader from './components/PdfUploader.jsx'
+import NlpRuleInput from './components/NlpRuleInput.jsx'
 import DataTable from './components/DataTable.jsx'
 import ErrorBanner from './components/ErrorBanner.jsx'
 import { parseRulesCSV, parseCartCSV } from './engine/csvParser.js'
-import { processCart, cartTotal } from './engine/discountEngine.js'
+import { processCart, cartTotal, getCartRules, applyCartDiscount } from './engine/discountEngine.js'
+
+const OPENAI_API_KEY = import.meta.env.VITE_OPENAI_API_KEY || ''
 
 // ── Column definitions ───────────────────────────────────────────
 
 const RULES_COLUMNS = [
   { key: 'ruleId',    label: 'Rule ID' },
   { key: 'scope',     label: 'Scope',      render: (v) => v.charAt(0).toUpperCase() + v.slice(1) },
-  { key: 'appliesTo', label: 'Applies To' },
+  { key: 'appliesTo', label: 'Applies To', render: (v) => v || <span style={{ color: '#aaa' }}>—</span> },
   { key: 'type',      label: 'Type',       render: (v) => v.charAt(0).toUpperCase() + v.slice(1) },
   {
     key: 'value',
     label: 'Value',
     render: (v, row) => row.type === 'percentage' ? `${v}% off` : `Rs.${v} off`,
   },
-  { key: 'stackable', label: 'Stackable',  render: (v) => (v ? 'Yes' : 'No') },
+  { key: 'stackable',    label: 'Stackable',      render: (v) => (v ? 'Yes' : 'No') },
+  { key: 'minCartValue', label: 'Min Cart Value',  render: (v) => v != null ? `Rs.${v.toLocaleString('en-IN')}` : <span style={{ color: '#aaa' }}>—</span> },
 ]
 
 const CART_COLUMNS = [
@@ -39,7 +47,9 @@ const RESULTS_COLUMNS = [
   { key: 'itemId',    label: 'Item' },
   { key: 'product',   label: 'Product' },
   { key: 'basePrice', label: 'Base Price',  render: (v) => `Rs.${v.toLocaleString('en-IN')}` },
-  { key: 'finalPrice',label: 'Final Price',
+  {
+    key: 'finalPrice',
+    label: 'Final Price',
     render: (v, row) => (
       <span style={{ fontWeight: 700, color: row.totalDiscount > 0 ? '#1e5c2c' : '#131A48' }}>
         Rs.{v.toLocaleString('en-IN')}
@@ -60,7 +70,10 @@ const RESULTS_COLUMNS = [
     key: 'reasoning',
     label: 'Offer Applied',
     render: (v) => (
-      <span style={{ color: v === 'No offers available' ? '#888' : '#131A48', fontStyle: v === 'No offers available' ? 'italic' : 'normal' }}>
+      <span style={{
+        color: v === 'No offers available' ? '#888' : '#131A48',
+        fontStyle: v === 'No offers available' ? 'italic' : 'normal',
+      }}>
         {v}
       </span>
     ),
@@ -70,50 +83,65 @@ const RESULTS_COLUMNS = [
 // ── Styles ───────────────────────────────────────────────────────
 
 const S = {
-  page:    { minHeight: '100vh', background: '#f7f7f9', fontFamily: 'Arial, sans-serif' },
-  header:  { background: '#131A48', padding: '0.85rem 2rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
-  logoTxt: { fontFamily: 'Georgia, serif', fontSize: 17, fontWeight: 700, color: '#fff', letterSpacing: '-0.02em' },
-  logoSpan:{ color: '#FF5800' },
-  headerSub: { fontSize: 11, color: 'rgba(255,255,255,0.5)', textTransform: 'uppercase', letterSpacing: '0.07em' },
-  main:    { maxWidth: 960, margin: '0 auto', padding: '1.8rem 1.5rem' },
-  section: { background: '#fff', border: '1px solid #CECECE', borderRadius: 6, padding: '1.2rem 1.4rem', marginBottom: '1.2rem' },
+  page:         { minHeight: '100vh', background: '#f7f7f9', fontFamily: 'Arial, sans-serif' },
+  header:       { background: '#131A48', padding: '0.85rem 2rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
+  logoTxt:      { fontFamily: 'Georgia, serif', fontSize: 17, fontWeight: 700, color: '#fff', letterSpacing: '-0.02em' },
+  logoSpan:     { color: '#FF5800' },
+  headerSub:    { fontSize: 11, color: 'rgba(255,255,255,0.5)', textTransform: 'uppercase', letterSpacing: '0.07em' },
+  main:         { maxWidth: 960, margin: '0 auto', padding: '1.8rem 1.5rem' },
+  section:      { background: '#fff', border: '1px solid #CECECE', borderRadius: 6, padding: '1.2rem 1.4rem', marginBottom: '1.2rem' },
   sectionTitle: { fontFamily: 'Georgia, serif', fontWeight: 700, fontSize: 14, color: '#131A48', marginBottom: '0.7rem', paddingBottom: 6, borderBottom: '2px solid #FF5800', display: 'inline-block' },
-  grid2:   { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' },
-  btn:     {
-    background: '#FF5800', color: '#fff', border: 'none', borderRadius: 4,
-    padding: '0.65rem 2rem', fontSize: 13, fontWeight: 700, cursor: 'pointer',
-    letterSpacing: '0.04em', textTransform: 'uppercase',
-  },
-  btnDisabled: {
-    background: '#CECECE', color: '#fff', border: 'none', borderRadius: 4,
-    padding: '0.65rem 2rem', fontSize: 13, fontWeight: 700, cursor: 'not-allowed',
-    letterSpacing: '0.04em', textTransform: 'uppercase',
-  },
-  totalRow: {
+  grid2:        { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' },
+  btn:          { background: '#FF5800', color: '#fff', border: 'none', borderRadius: 4, padding: '0.65rem 2rem', fontSize: 13, fontWeight: 700, cursor: 'pointer', letterSpacing: '0.04em', textTransform: 'uppercase' },
+  btnDisabled:  { background: '#CECECE', color: '#fff', border: 'none', borderRadius: 4, padding: '0.65rem 2rem', fontSize: 13, fontWeight: 700, cursor: 'not-allowed', letterSpacing: '0.04em', textTransform: 'uppercase' },
+  totalRow:     { display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '1rem', marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '2px solid #131A48' },
+  totalLabel:   { fontWeight: 700, fontSize: 14, color: '#131A48' },
+  totalValue:   { fontWeight: 700, fontSize: 16, color: '#131A48' },
+  cartOfferRow: {
     display: 'flex', justifyContent: 'flex-end', alignItems: 'center',
-    gap: '1rem', marginTop: '0.75rem', paddingTop: '0.75rem',
-    borderTop: '2px solid #131A48',
+    gap: '1rem', marginTop: '0.5rem', paddingTop: '0.5rem',
+    borderTop: '1px dashed #CECECE',
   },
-  totalLabel: { fontWeight: 700, fontSize: 14, color: '#131A48' },
-  totalValue: { fontWeight: 700, fontSize: 16, color: '#131A48' },
-  tag: (color, bg) => ({
-    display: 'inline-block', fontSize: 10, fontWeight: 700, padding: '1px 6px',
-    borderRadius: 20, background: bg, color, textTransform: 'uppercase', letterSpacing: '0.04em',
+  cartOfferLabel: { fontWeight: 600, fontSize: 13, color: '#1e5c2c' },
+  cartOfferValue: { fontWeight: 700, fontSize: 14, color: '#1e5c2c' },
+  subtotalRow: {
+    display: 'flex', justifyContent: 'flex-end', alignItems: 'center',
+    gap: '1rem', marginTop: '0.5rem', paddingTop: '0.5rem',
+    borderTop: '1px solid #eee',
+  },
+  subtotalLabel: { fontWeight: 500, fontSize: 12, color: '#888' },
+  subtotalValue: { fontWeight: 600, fontSize: 14, color: '#888' },
+  divider: { borderTop: '1px solid #eee', margin: '0.75rem 0' },
+  tabRow: { display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' },
+  tab: (active) => ({
+    padding: '0.35rem 1rem', fontSize: 12, fontWeight: 700, borderRadius: 20,
+    border: `1px solid ${active ? '#FF5800' : '#CECECE'}`,
+    background: active ? '#FF5800' : '#fff',
+    color: active ? '#fff' : '#888',
+    cursor: 'pointer', letterSpacing: '0.03em', textTransform: 'uppercase',
   }),
+  nlpTag: {
+    display: 'inline-block', fontSize: 9, fontWeight: 700, padding: '1px 5px',
+    borderRadius: 10, background: '#e8f0fe', color: '#1a56db',
+    textTransform: 'uppercase', letterSpacing: '0.04em', marginLeft: 6, verticalAlign: 'middle',
+  },
 }
 
 // ── Component ────────────────────────────────────────────────────
 
 export default function App() {
-  const [rules, setRules]           = useState([])
-  const [rulesErrors, setRulesErr]  = useState([])
-  const [rulesFileName, setRulesFileName] = useState('')
+  // ── State ──
+  const [rules, setRules]                     = useState([])
+  const [rulesErrors, setRulesErr]            = useState([])
+  const [rulesFileName, setRulesFileName]     = useState('')
 
-  const [cartItems, setCartItems]   = useState([])
-  const [cartErrors, setCartErrors] = useState([])
-  const [cartFileName, setCartFileName]   = useState('')
+  const [cartItems, setCartItems]             = useState([])
+  const [cartErrors, setCartErrors]           = useState([])
+  const [cartFileName, setCartFileName]       = useState('')
+  const [cartInputMode, setCartInputMode]     = useState('csv') // 'csv' | 'pdf'
 
-  const [results, setResults]       = useState(null)
+  const [results, setResults]                 = useState(null)
+  const [cartDiscount, setCartDiscount]       = useState(null)
 
   // ── Handlers ──
 
@@ -122,7 +150,8 @@ export default function App() {
     setRules(data)
     setRulesErr(errors)
     setRulesFileName(fileName)
-    setResults(null) // clear stale results
+    setResults(null)
+    setCartDiscount(null)
   }
 
   function handleCartLoad(csvText, fileName) {
@@ -131,14 +160,48 @@ export default function App() {
     setCartErrors(errors)
     setCartFileName(fileName)
     setResults(null)
+    setCartDiscount(null)
+  }
+
+  // Task 3: PDF cart load — cartItems replace CSV cart, errors shown via ErrorBanner
+  function handlePdfCartLoad(items, errors, fileName) {
+    setCartItems(items)
+    setCartErrors(errors)
+    setCartFileName(fileName)
+    setResults(null)
+    setCartDiscount(null)
+  }
+
+  // Task 2: NLP rule confirmed — append to rules, re-run if results exist
+  function handleNlpRuleConfirmed(newRule) {
+    const updatedRules = [...rules, newRule]
+    setRules(updatedRules)
+    setRulesErr([])
+    // If a calculation has already been run, re-run it with the new rule
+    if (cartItems.length > 0) {
+      runCalculation(cartItems, updatedRules)
+    }
+  }
+
+  function runCalculation(items, activeRules) {
+    // Item-level discounts (cart-scope rules are ignored inside processCart via ruleMatchesItem)
+    const itemResults = processCart(items, activeRules)
+    // Task 1: Cart-level discount applied after item-level
+    const cartRules = getCartRules(activeRules)
+    const cartDiscountResult = applyCartDiscount(itemResults, cartRules)
+    setResults(itemResults)
+    setCartDiscount(cartDiscountResult)
   }
 
   function handleCalculate() {
-    const res = processCart(cartItems, rules)
-    setResults(res)
+    runCalculation(cartItems, rules)
   }
 
   const canCalculate = rules.length > 0 && cartItems.length > 0
+
+  // Computed totals for display
+  const itemSubtotal = results ? cartTotal(results) : 0
+  const finalTotal   = cartDiscount ? cartDiscount.discountedTotal : itemSubtotal
 
   // ── Render ──
 
@@ -152,9 +215,10 @@ export default function App() {
 
       <div style={S.main}>
 
-        {/* Upload row */}
+        {/* ── Upload row ── */}
         <div style={S.grid2}>
-          {/* Rules upload */}
+
+          {/* Rules panel */}
           <div style={S.section}>
             <div style={S.sectionTitle}>Discount Rules</div>
             <CsvUploader
@@ -169,22 +233,41 @@ export default function App() {
               <div style={{ marginTop: '0.75rem' }}>
                 <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>
                   {rules.length} rule{rules.length > 1 ? 's' : ''} loaded
+                  {rules.some(r => r.ruleId.startsWith('NLP-')) && (
+                    <span style={S.nlpTag}>includes NLP rules</span>
+                  )}
                 </div>
                 <DataTable columns={RULES_COLUMNS} rows={rules} />
               </div>
             )}
           </div>
 
-          {/* Cart upload */}
+          {/* Cart panel — CSV or PDF tabs */}
           <div style={S.section}>
             <div style={S.sectionTitle}>Cart Items</div>
-            <CsvUploader
-              label="cart.csv"
-              description="Upload your cart CSV"
-              onLoad={handleCartLoad}
-              hasData={cartItems.length > 0}
-              fileName={cartFileName}
-            />
+
+            {/* Input mode toggle */}
+            <div style={S.tabRow}>
+              <button style={S.tab(cartInputMode === 'csv')} onClick={() => setCartInputMode('csv')}>CSV</button>
+              <button style={S.tab(cartInputMode === 'pdf')} onClick={() => setCartInputMode('pdf')}>PDF</button>
+            </div>
+
+            {cartInputMode === 'csv' ? (
+              <CsvUploader
+                label="cart.csv"
+                description="Upload your cart CSV"
+                onLoad={handleCartLoad}
+                hasData={cartItems.length > 0}
+                fileName={cartFileName}
+              />
+            ) : (
+              <PdfUploader
+                onLoad={handlePdfCartLoad}
+                hasData={cartItems.length > 0}
+                fileName={cartFileName}
+              />
+            )}
+
             <ErrorBanner errors={cartErrors} />
             {cartItems.length > 0 && (
               <div style={{ marginTop: '0.75rem' }}>
@@ -197,7 +280,13 @@ export default function App() {
           </div>
         </div>
 
-        {/* Calculate button */}
+        {/* ── Task 2: NLP Rule Input (ChatGPT) ── */}
+        <NlpRuleInput
+          initialApiKey={OPENAI_API_KEY}
+          onRuleConfirmed={handleNlpRuleConfirmed}
+        />
+
+        {/* ── Calculate button ── */}
         <div style={{ textAlign: 'center', marginBottom: '1.2rem' }}>
           <button
             style={canCalculate ? S.btn : S.btnDisabled}
@@ -213,14 +302,30 @@ export default function App() {
           )}
         </div>
 
-        {/* Results */}
+        {/* ── Results ── */}
         {results && (
           <div style={S.section}>
             <div style={S.sectionTitle}>Cart Summary</div>
             <DataTable columns={RESULTS_COLUMNS} rows={results} />
+
+            {/* Item subtotal */}
+            <div style={S.subtotalRow}>
+              <span style={S.subtotalLabel}>Items subtotal</span>
+              <span style={S.subtotalValue}>Rs.{itemSubtotal.toLocaleString('en-IN')}</span>
+            </div>
+
+            {/* Task 1: Cart-level offer row (only shown when triggered) */}
+            {cartDiscount && (
+              <div style={S.cartOfferRow}>
+                <span style={S.cartOfferLabel}>{cartDiscount.reasoning}</span>
+                <span style={S.cartOfferValue}>−Rs.{cartDiscount.saving.toLocaleString('en-IN')}</span>
+              </div>
+            )}
+
+            {/* Final total */}
             <div style={S.totalRow}>
-              <span style={S.totalLabel}>Cart Total</span>
-              <span style={S.totalValue}>Rs.{cartTotal(results).toLocaleString('en-IN')}</span>
+              <span style={S.totalLabel}>Final Cart Total</span>
+              <span style={S.totalValue}>Rs.{finalTotal.toLocaleString('en-IN')}</span>
             </div>
           </div>
         )}

@@ -31,3 +31,6 @@ pnpm-debug.log*
 # OS files
 .DS_Store
 Thumbs.db
+
+# Assignment brief files
+Opptra_FDE*
