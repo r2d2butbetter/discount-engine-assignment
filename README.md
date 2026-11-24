@@ -3,7 +3,7 @@
 An extensible, customer-facing cart pricing and discount engine built for Opptra Central Tech. It calculates optimal customer savings across brand, platform, and cart-level discount campaigns with clear, plain-language breakdown strings.
 
 ## Live Deployment
-- **Live URL:** `https://your-deployment-url.vercel.app` *(Replace with your live URL upon deployment)*
+- **Live URL:** https://discount-engine-assignment-cyan.vercel.app/
 
 ---
 
